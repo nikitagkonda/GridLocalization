@@ -1,0 +1,4 @@
+<launch>
+	<node name="lab4" pkg="lab4" type="lab4.py" />
+	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find lab4)/rviz/config.rviz"/>
+</launch>

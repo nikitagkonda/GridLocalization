@@ -1,0 +1,189 @@
+#!/usr/bin/env python
+import rosbag
+import rospkg
+import numpy as np
+import tf
+import scipy.ndimage.filters as sp
+from lab4.msg import Motion
+from lab4.msg import Observation
+import math
+
+from interactive_markers.interactive_marker_server import *
+from visualization_msgs.msg import *
+
+def getAbsLoc(a):
+	return float((a*20)+10)
+
+def getGridLoc(a):
+	a=round(a/20)
+	if a>=35:
+		a=34
+	if a<=-1:
+		a=0
+	return a
+	
+def getGridTheta(a):
+	return int(a/10)
+
+def getAbsTheta(a):
+	return float(a*10+5)
+
+def getTagPos(tag):
+	if tag==0:
+		x=125
+		y=525
+	elif tag==1:
+		x=125
+		y=325
+	elif tag==2:
+		x=125
+		y=125
+	elif tag==3:
+		x=425
+		y=125
+	elif tag==4:
+		x=425
+		y=325
+	else:
+		x=425
+		y=525
+	return x,y				
+
+def my_bayes_filter():
+	
+	pub2 = rospy.Publisher('/visualization_marker',Marker, queue_size = 100)
+	marker = Marker()
+	marker.header.frame_id = "/base_link"
+	marker.header.stamp = rospy.Time.now()
+	marker.ns="lines"
+	
+	marker.type=marker.LINE_LIST
+	marker.action = marker.ADD
+	
+	marker.pose.orientation.x = 0.0
+	marker.pose.orientation.y = 0.0
+	marker.pose.orientation.z = 0.0
+	marker.pose.orientation.w = 1.0
+	marker.scale.x = 0.1
+	marker.color.g = 1.0
+        marker.color.a = 1.0
+	
+	rospack = rospkg.RosPack()
+	bag = rosbag.Bag(rospack.get_path('lab4')+'/bag/grid.bag')
+	state = np.zeros((35,35,36))
+	state[11][27][20]=1
+	count=0
+	for topic, msg, t in bag.read_messages(topics=['Movements', 'Observations']):
+		#count=count+1
+		#if count==60:
+		#	break
+		#print msg
+		if msg.timeTag%2!=0:
+		
+			quaternion = (msg.rotation1.x, msg.rotation1.y, msg.rotation1.z, msg.rotation1.w)
+			euler = tf.transformations.euler_from_quaternion(quaternion)
+			theta1=euler[2]
+			theta1=math.degrees(theta1)
+			quaternion = (msg.rotation2.x, msg.rotation2.y, msg.rotation2.z, msg.rotation2.w)
+			euler = tf.transformations.euler_from_quaternion(quaternion)
+			theta2=euler[2]
+			theta2=math.degrees(theta2) 
+			#print math.degrees(theta2)
+			#print msg.translation
+			#Adding the deviation
+			gaussian=[0.157731,0.684538,0.157731]
+			state_temp = np.zeros((35,35,36))
+
+			#Shifting probabilities
+			for i in range(35):
+		    		for j in range(35):
+					for k in range(36):
+						if state[i][j][k]>0:
+							d=getAbsTheta(k)+theta1
+							dx=msg.translation*100*math.cos(math.radians(d))
+							dy=msg.translation*100*math.sin(math.radians(d))
+							x=dx+getAbsLoc(i)
+							y=dy+getAbsLoc(j)
+							theta=getAbsTheta(k)+theta1+theta2
+							if theta<0:
+								theta=theta+360
+							if theta>360:
+								theta=theta-360
+							if theta==360:
+								theta=0
+						
+							x=getGridLoc(x)
+							y=getGridLoc(y)
+							#theta_final=math.radians(theta)
+							theta=getGridTheta(theta)
+							state_temp[x][y][theta]=state_temp[x][y][theta]+state[i][j][k]
+							#print 'motion '+str(x)+' '+str(y)
+		
+			state_g = sp.gaussian_filter(state_temp, sigma=1, truncate=1.0)
+			max_ind=np.unravel_index(state_g.argmax(), state_g.shape)
+			print 'motion '+str(msg.timeTag)+': '+str(max_ind)
+			#c=0
+			#for i in range(35):
+	    		#	for j in range(35):
+			#		for k in range(36):
+			#			if state[i][j][k]>0:
+			#				print 'i ' + str(i) +' j '+str(j)+' k '+str(k)
+			#				print state[i][j][k]
+			#				c=c+1
+			#				print c
+			#Applying gaussian
+			#state=state_temp
+			
+		else:
+			quaternion = (msg.bearing.x, msg.bearing.y, msg.bearing.z, msg.bearing.w)
+			euler = tf.transformations.euler_from_quaternion(quaternion)
+			b_angle=euler[2]
+			#theta=math.degrees(theta)
+
+			max_g=np.unravel_index(state_g.argmax(), state_g.shape)
+			r_angle=getAbsTheta(max_g[2])
+			r_angle=math.radians(r_angle)
+			tag_x, tag_y=getTagPos(msg.tagNum)
+			dx=msg.range*100*math.cos(b_angle+r_angle)
+			dy=msg.range*100*math.sin(b_angle+r_angle)
+			x=tag_x-dx
+			y=tag_y-dy
+			x=getGridLoc(x)
+			y=getGridLoc(y)
+		
+			theta_obs=getGridTheta(math.degrees(r_angle))
+			#print theta_obs
+			state_obs=np.zeros((35,35,36))
+			state_obs[x][y][theta_obs]=1
+
+			#gaussian
+
+			state_obs_g = sp.gaussian_filter(state_obs, sigma=1, truncate=1.0)
+			state=np.add(state_obs_g,state_g)
+			state=np.divide(state,2.)
+			max_indices=np.unravel_index(state.argmax(), state.shape)
+			print 'observation '+str(msg.timeTag)+': '+str(max_indices)
+			#print 'observation '+str(x)+' '+str(y)
+		
+
+	#c=0
+	#blurred = sp.gaussian_filter(state, sigma=1, truncate=1.0)
+	#for i in range(35):
+	 #   	for j in range(35):
+	#		for k in range(36):
+	#			if state[i][j][k]>0:
+	#				print 'i ' + str(i) +' j '+str(j)+' k '+str(k)
+	#				print state[i][j][k]
+	#				c=c+1
+	#				print c
+
+	bag.close()
+if __name__ =="__main__":
+	try:
+		rospy.init_node('bayes',anonymous=True)	
+		rate = rospy.Rate(10)
+	except rospy.ROSInterruptException:
+        	pass
+	rospy.spin()
+
+

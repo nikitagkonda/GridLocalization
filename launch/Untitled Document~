@@ -1,0 +1,3 @@
+<launch>
+	<node name="bayes" pkg="lab4" type="bayes" />
+</launch>
